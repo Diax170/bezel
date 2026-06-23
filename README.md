@@ -18,6 +18,7 @@ Bezel is Linux-only (Wayland required).
 ```sh
 curl -sSfL https://raw.githubusercontent.com/indra55/bezel/main/install.sh | bash
 ```
+*(To update to a newer version, simply run this exact same command again. It will safely back up your old binary and seamlessly restart the service.)*
 
 ### From source
 ```sh

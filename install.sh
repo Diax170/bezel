@@ -4,54 +4,73 @@ set -e
 echo "--- Bezel Smart Installer ---"
 
 INSTALL_MODE="unknown"
+NEEDS_RELOGIN=0
 BIN_DEST="$HOME/.local/bin/bezel"
 REPO_URL="https://github.com/indra55/bezel"
 LATEST_RELEASE_URL="$REPO_URL/releases/latest/download/bezel-linux-amd64"
 CONFIG_EXAMPLE_URL="https://raw.githubusercontent.com/indra55/bezel/main/config.toml.example"
 
+LOCAL_VERSION="none"
+if command -v bezel &> /dev/null; then
+    LOCAL_VERSION=$(bezel --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+    BIN_DEST="$(command -v bezel)"
+fi
+
 if [ -f "Cargo.toml" ] && grep -q 'name = "bezel"' Cargo.toml 2>/dev/null; then
     INSTALL_MODE="source"
-elif command -v bezel &> /dev/null; then
-    INSTALL_MODE="preinstalled"
-    BIN_DEST="$(command -v bezel)"
 else
     INSTALL_MODE="download"
 fi
 
 if [ "$INSTALL_MODE" = "source" ]; then
+    echo "[1/6] Local source detected. Building Bezel binary from source..."
     if ! command -v cargo &> /dev/null; then
         echo "Error: Rust/Cargo not found. Install from https://rustup.rs"
         exit 1
     fi
-    echo "[1/6] Building Bezel binary from source (this might take a minute)..."
     cargo build --release
     echo "[2/6] Installing binary to ~/.local/bin/bezel..."
     mkdir -p ~/.local/bin
+    if [ -f "$BIN_DEST" ]; then
+        echo "      Backing up existing binary to $BIN_DEST.bak"
+        cp "$BIN_DEST" "$BIN_DEST.bak"
+    fi
     cp target/release/bezel ~/.local/bin/
     BIN_DEST="$HOME/.local/bin/bezel"
-elif [ "$INSTALL_MODE" = "preinstalled" ]; then
-    echo "[1/6] Found existing Bezel binary at $BIN_DEST. Skipping build."
-    echo "[2/6] Skipping binary installation."
-elif [ "$INSTALL_MODE" = "download" ]; then
-    echo "[1/6] Downloading prebuilt Bezel binary..."
+else
+    echo "[1/6] Fetching latest release info..."
+    REMOTE_VERSION=$(curl -w "%{url_effective}\n" -I -L -s -S "$REPO_URL/releases/latest" -o /dev/null | awk -F '/' '{print $NF}')
+    
+    if [ "$LOCAL_VERSION" != "none" ]; then
+        if [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ] || [ "v$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+            echo "      You are already on the latest version ($LOCAL_VERSION). Reinstalling..."
+        else
+            echo "      Updating $LOCAL_VERSION -> $REMOTE_VERSION..."
+        fi
+    else
+        echo "      Installing version $REMOTE_VERSION..."
+    fi
+
+    echo "[2/6] Downloading prebuilt Bezel binary..."
     mkdir -p ~/.local/bin
+    
+    if [ -f "$BIN_DEST" ]; then
+        echo "      Backing up existing binary to $BIN_DEST.bak"
+        cp "$BIN_DEST" "$BIN_DEST.bak"
+    fi
+
     if ! curl -sSfL "$LATEST_RELEASE_URL" -o "$HOME/.local/bin/bezel"; then
         echo "      Prebuilt binary not found (release may not exist yet)."
         if command -v cargo &> /dev/null; then
             echo "      Cargo detected. Falling back to source build..."
-            echo "[1/6] Building Bezel binary from git (this might take a minute)..."
             cargo install --git "$REPO_URL" --root "$HOME/.local"
             BIN_DEST="$HOME/.local/bin/bezel"
-            echo "[2/6] Installed binary to ~/.local/bin/bezel"
         else
             echo "Error: Failed to download prebuilt binary."
-            echo "Please install Rust/Cargo (https://rustup.rs) to compile from source,"
-            echo "or wait for a prebuilt release."
             exit 1
         fi
     else
         chmod +x "$HOME/.local/bin/bezel"
-        echo "[2/6] Installed binary to ~/.local/bin/bezel"
         BIN_DEST="$HOME/.local/bin/bezel"
     fi
 fi
