@@ -42,7 +42,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn Dispatcher (Task 3)
     let osd_config = initial_config.osd.clone();
     tokio::spawn(async move {
         run_dispatcher(action_rx, osd_config).await;
@@ -75,7 +74,6 @@ async fn main() -> Result<()> {
         info!("Config file not found. Defaulting built-in configuration.");
     }
 
-    // Gesture Resolver (Task 2) inline here
     while let Some(event) = gesture_rx.recv().await {
         let current_config = config_rx.borrow().clone();
         

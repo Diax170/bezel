@@ -208,9 +208,9 @@ pub async fn run_input_reader(
                                         slots[i].assigned_zone = Some(zone);
                                         debug!("Touch in slot {} claimed in zone {:?}", i, zone);
                                         
-                                        // We should also remove the events for this slot from pending_passthrough
-                                        // since we just claimed it, but it might have already been added.
-                                        // For simplicity, it will just start dropping future events.
+                                        // Emit synthetic lift event for virtual device
+                                        pending_passthrough.push(InputEvent::new(evdev::EventType::ABSOLUTE, AbsoluteAxisType::ABS_MT_SLOT.0, i as i32));
+                                        pending_passthrough.push(InputEvent::new(evdev::EventType::ABSOLUTE, AbsoluteAxisType::ABS_MT_TRACKING_ID.0, -1));
                                     }
                                     slots[i].needs_zone_check = false;
                                 }

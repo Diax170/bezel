@@ -15,24 +15,18 @@ pub async fn run_dispatcher(
         
         let cmd = action.cmd.clone();
         
-        // Spawn the command asynchronously so we don't block the dispatcher
         tokio::spawn(async move {
-            let mut parts = cmd.split_whitespace();
-            if let Some(program) = parts.next() {
-                let args: Vec<&str> = parts.collect();
-                
-                match Command::new(program).args(&args).output() {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            error!("Command failed ({}): {}", program, stderr);
-                        } else {
-                            debug!("Command success: {}", program);
-                        }
+            match Command::new("sh").arg("-c").arg(&cmd).output() {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        error!("Command failed ({}): {}", cmd, stderr);
+                    } else {
+                        debug!("Command success: {}", cmd);
                     }
-                    Err(e) => {
-                        error!("Failed to execute command {}: {}", program, e);
-                    }
+                }
+                Err(e) => {
+                    error!("Failed to execute command {}: {}", cmd, e);
                 }
             }
         });
