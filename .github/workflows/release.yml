@@ -10,7 +10,7 @@ permissions:
   contents: write 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
@@ -33,6 +33,12 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo dpkg --add-architecture arm64
+          sudo sed -i -e 's/^deb /deb [arch=amd64,i386] /g' /etc/apt/sources.list
+          sudo bash -c 'cat <<EOF > /etc/apt/sources.list.d/arm64.list
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse
+          EOF'
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libudev-dev:arm64
           # Tell pkg-config to allow cross-compiling and point it to the ARM libs
