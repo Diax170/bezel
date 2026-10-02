@@ -329,7 +329,26 @@ exec-once = systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESK
 exec systemctl --user import-environment WAYLAND_DISPLAY SWAYSOCK DBUS_SESSION_BUS_ADDRESS
 ```
 *(Niri does this automatically).*
+### Bezel is Intercepting the Wrong Device
 
+If Bezel accidentally grabs a touchscreen or stylus instead of your trackpad, you can bypass auto-detection by explicitly defining the trackpad's name in your `~/.config/bezel/config.toml`.
+
+You can find your trackpad's exact name by running `sudo libinput list-devices` and copying the string from the **Device** line.
+
+```toml
+[device]
+path = "PIXA3854:00 093A:0239 Touchpad"
+
+```
+
+*(Note: Using the device name is recommended over hardcoding a `/dev/input/event*` path, as event numbers change on reboot.)*
+
+Restart the service for the changes to take effect:
+
+```sh
+systemctl --user restart bezel.service
+
+```
 ### Debugging Logs
 
 To enable more detailed logging, you can set the `BEZEL_LOG` environment variable. Valid log levels are `error`, `warn`, `info`, `debug`, and `trace`. For example:
