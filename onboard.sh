@@ -15,6 +15,7 @@ ui_active=0
 ui_saved_stty=
 ui_fd=0
 generated=
+editing_existing=0
 
 detect_desktop() {
     local session="${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-}}"
@@ -329,6 +330,109 @@ declare -A recognition=( [join_ms]=80 [swipe_distance]=0.05 [tap_distance]=0.02 
 recognition_keys=(join_ms swipe_distance tap_distance tap_ms double_tap_ms hold_ms step_distance)
 gesture_names=(tap double_tap hold swipe_up swipe_down swipe_left swipe_right swipe_up_left swipe_up_right swipe_down_left swipe_down_right slide_up slide_down slide_left slide_right)
 
+# Python's TOML parser handles quoted keys, escapes, and multiline commands.
+existing_config() {
+    python3 - "$config_file" "$@" <<'PYTHON'
+import datetime
+import json
+from pathlib import Path
+import sys
+try:
+    import tomllib
+except ImportError:
+    print("Editing an existing config requires Python 3.11 or newer.", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    source = tomllib.loads(Path(sys.argv[1]).read_text())
+    if len(sys.argv) == 2:
+        edges = {"left", "right", "top", "bottom"}
+        supported_gestures = {"tap", "double_tap", "hold", "swipe_up", "swipe_down",
+                    "swipe_left", "swipe_right", "swipe_up_left", "swipe_up_right",
+                    "swipe_down_left", "swipe_down_right", "slide_up", "slide_down",
+                    "slide_left", "slide_right"}
+        def record(kind, key, value):
+            value = str(value)
+            if "\0" in value:
+                raise ValueError("NUL characters cannot be edited")
+            sys.stdout.buffer.write((kind + "\0" + key + "\0" + value + "\0").encode())
+
+        for edge, gestures in source.get("gestures", {}).items():
+            if edge not in edges:
+                raise ValueError(f"Unknown edge: {edge}")
+            for direction, action in gestures.items():
+                if direction not in {"up", "down", "left", "right", "tap"} or action.get("action") != "command":
+                    raise ValueError("Unsupported legacy gesture")
+                gesture = "tap" if direction == "tap" else "swipe_" + direction
+                record("command", f"{edge}.1.{gesture}", action["cmd"])
+        for binding in source.get("bindings", []):
+            if (binding["zone"] not in edges or binding["fingers"] not in range(1, 5)
+                    or binding["gesture"] not in supported_gestures or binding.get("action") != "command"):
+                raise ValueError("Unsupported binding")
+            key = f"{binding['zone']}.{binding['fingers']}.{binding['gesture']}"
+            record("command", key, binding["cmd"])
+            for setting in ("join_ms", "swipe_distance", "tap_distance", "tap_ms",
+                            "double_tap_ms", "hold_ms", "step_distance"):
+                if setting in binding:
+                    record("tuning", key + "." + setting, binding[setting])
+        for key, value in source.get("recognition", {}).items():
+            record("recognition", key, value)
+    else:
+        target = Path(sys.argv[2])
+        updated = tomllib.loads(target.read_text())
+        for key in ("gestures", "bindings", "recognition"):
+            source.pop(key, None)
+            if key in updated:
+                source[key] = updated[key]
+
+        def scalar(value):
+            if isinstance(value, (datetime.date, datetime.time)):
+                return value.isoformat()
+            if isinstance(value, list):
+                return "[" + ", ".join(scalar(v) for v in value) + "]"
+            if isinstance(value, dict):
+                return "{ " + ", ".join(json.dumps(k) + " = " + scalar(v) for k, v in value.items()) + " }"
+            if isinstance(value, float):
+                return str(value)
+            return json.dumps(value, ensure_ascii=False)
+
+        lines = []
+        def table(values, path=()):
+            for key, value in values.items():
+                if not isinstance(value, dict):
+                    lines.append(json.dumps(key) + " = " + scalar(value))
+            for key, value in values.items():
+                if isinstance(value, dict):
+                    child = path + (key,)
+                    lines.append("\n[" + ".".join(json.dumps(k) for k in child) + "]")
+                    table(value, child)
+        table(source)
+        text = "\n".join(lines) + "\n"
+        tomllib.loads(text)
+        target.write_text(text)
+except (OSError, ValueError, KeyError, TypeError) as error:
+    print(f"Cannot edit existing config: {error}", file=sys.stderr)
+    sys.exit(1)
+PYTHON
+}
+
+load_existing() {
+    [ "$declarative" -eq 0 ] && [ -f "$config_file" ] || return 0
+    local loaded kind key value
+    loaded="$(mktemp)"
+    if ! existing_config > "$loaded"; then rm -f -- "$loaded"; exit 1; fi
+    bindings=()
+    while IFS= read -r -d '' kind && IFS= read -r -d '' key && IFS= read -r -d '' value; do
+        case "$kind" in
+            command) advanced_commands[$key]="$value" ;;
+            tuning) advanced_tuning[$key]="$value" ;;
+            recognition) recognition[$key]="$value" ;;
+        esac
+    done < "$loaded"
+    rm -f -- "$loaded"
+    editing_existing=1
+}
+
 choose() {
     local prompt="$1"; shift
     local choices=("$@") i
@@ -385,6 +489,7 @@ remove_advanced_binding() {
 escape_command() {
     local value="$1" format="$2"
     value="${value//\\/\\\\}"; value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"; value="${value//$'\b'/\\b}"; value="${value//$'\f'/\\f}"
     value="${value//$'\t'/\\t}"; value="${value//$'\r'/\\r}"
     if [ "$format" = nix ]; then value="${value//\$\{/\\\$\{}"; fi
     printf '%s' "$value"
@@ -443,7 +548,7 @@ setting_error() {
 
 plain_wizard() {
     show_welcome
-if [ "$desktop_explicit" -eq 0 ]; then
+if [ "$desktop_explicit" -eq 0 ] && [ "$editing_existing" -eq 0 ]; then
     printf '\nSession detected: %s\n' "$(desktop_name "$desktop")" >&2
     printf '  1) Hyprland   2) Niri   3) Sway\n' >&2
     printf '  4) KDE Plasma 5) GNOME  6) Other Wayland\n' >&2
@@ -466,6 +571,7 @@ fi
     configure_desktop
     set_desktop_defaults
 step=0
+if [ "$editing_existing" -eq 0 ]; then
 for edge in left right top bottom; do
     step=$((step + 1))
     draw_trackpad "$edge"
@@ -508,6 +614,7 @@ for edge in left right top bottom; do
         esac
     done
 done
+fi
 
 if [ "$input_source" != none ]; then
     while :; do
@@ -579,6 +686,7 @@ done
 }
 
 set_desktop_defaults() {
+    [ "$editing_existing" -eq 0 ] || return 0
     if [ -n "$workspace_prev" ]; then bindings[top.left]=12; bindings[top.right]=13; fi
     if [ -n "$toggle_magic" ]; then bindings[top.tap]=16; fi
 }
@@ -705,7 +813,7 @@ panel_context() {
                 [ "$direction" != tap ] || ui_gesture=tap
                 ui_action="$(action_name "${bindings[$edge.$direction]}")"
             elif [ "$value" = 1 ] && [ "$declarative" -eq 0 ]; then
-                ui_notice='Replaces the config after backing up the current file.'
+                ui_notice='Saves controls with a backup; keeps device, zone and OSD settings.'
             fi ;;
     esac
 }
@@ -1157,9 +1265,10 @@ panel_tuning() {
 }
 
 panel_binding() {
-    local operation="$1" state=0 key='' advanced_edge="${2:-left}" fingers=1 gesture=tap cmd
+    local operation="$1" state=0 key='' advanced_edge="${2:-left}" fingers="${3:-1}" gesture="${4:-tap}" cmd
     local fixed_edge="${2:-}" existing id selected_action direction label
     if [ -n "$fixed_edge" ]; then state=1; ui_edge="$fixed_edge"; fi
+    if [ -n "${4:-}" ]; then state=3; key="$advanced_edge.$fingers.$gesture"; fi
     local -a tuning_keys=()
     while :; do
         case "$state" in
@@ -1185,7 +1294,7 @@ panel_binding() {
                             label+=" / $(action_name "${bindings[$advanced_edge.$direction]}")"
                         fi
                     elif [ -n "$existing" ]; then
-                        label+=' / assigned'
+                        label+=" / $existing"
                         for id in {1..30}; do
                             if [ "$(action_command "$id")" = "$existing" ]; then label="${gesture//_/ } / $(action_name "$id")"; break; fi
                         done
@@ -1229,7 +1338,7 @@ panel_binding() {
                     swipe_*) tuning_keys=(swipe_distance) ;;
                 esac
                 panel_tuning optional "${tuning_keys[@]}"
-                if [ -n "$fixed_edge" ]; then state=2; else return 0; fi ;;
+                if [ -n "$fixed_edge" ] && [ -z "${4:-}" ]; then state=2; else return 0; fi ;;
         esac
     done
 }
@@ -1282,11 +1391,16 @@ panel_review() {
                 done
             done
         done
-        panel_menu 'Review your controls' review "$selection" || return 1
+        panel_menu 'Review controls / Select a binding to edit' review "$selection" || return 1
         case "$answer" in
             back) return 1 ;;
             3) panel_cleanup; printf 'Cancelled; configuration untouched.\n'; exit 0 ;;
             1|2) save_choice="$answer"; return 0 ;;
+            binding:*)
+                local selected_key="${answer#binding:}" edge fingers gesture
+                IFS=. read -r edge fingers gesture <<< "$selected_key"
+                panel_binding edit "$edge" "$fingers" "$gesture"
+                selection=0 ;;
             *) selection=$ui_selected ;;
         esac
     done
@@ -1294,8 +1408,11 @@ panel_review() {
 
 panel_wizard() {
     local stage=0
-    menu_labels=('Begin setup' Cancel) menu_values=(begin cancel)
-    if ! panel_menu 'Your trackpad, tuned to you.' welcome || [ "$answer" = cancel ]; then exit 0; fi
+    if [ "$editing_existing" -eq 1 ]; then stage=3; fi
+    if [ "$editing_existing" -eq 0 ]; then
+        menu_labels=('Begin setup' Cancel) menu_values=(begin cancel)
+        if ! panel_menu 'Your trackpad, tuned to you.' welcome || [ "$answer" = cancel ]; then exit 0; fi
+    fi
     while :; do
         case "$stage" in
             0)
@@ -1325,6 +1442,7 @@ mapfile -t welcome_logo <<'ART'
 ░▒▓███████▓▒░░▒▓████████▓▒░▒▓████████▓▒░▒▓████████▓▒░▒▓████████▓▒░
 ART
 save_choice='' panel_defaults_set=0
+load_existing
 if panel_init; then
     panel_wizard
     panel_cleanup
@@ -1359,10 +1477,13 @@ generated="$(mktemp "$config_dir/.config.toml.XXXXXX")"
     emit_bindings toml
     emit_advanced toml
 } > "$generated"
+if [ "$editing_existing" -eq 1 ]; then
+    if ! existing_config "$generated"; then rm -f -- "$generated"; exit 1; fi
+fi
 
 if [ -e "$config_file" ] || [ -L "$config_file" ]; then
     printf '\nYour current config is safe at %s.\n' "$config_file" >&2
-    printf 'A preview does not change your active gestures. Applying replaces the whole config, including custom device, zone, and OSD settings, after making a backup.\n' >&2
+    printf 'A preview does not change your active gestures. Applying saves your bindings and recognition settings after making a backup. Existing device, zone, and OSD settings are kept.\n' >&2
     if [ -n "$save_choice" ]; then answer="$save_choice"
     elif [ "$input_source" = none ]; then answer=2
     else
