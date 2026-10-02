@@ -34,7 +34,7 @@
 
             postPatch = ''
               substituteInPlace src/dispatcher.rs \
-                --replace '"sh"' '"${pkgs.runtimeShell}"'
+                --replace-fail '"sh"' '"${pkgs.runtimeShell}"'
             '';
 
             meta = {
