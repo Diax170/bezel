@@ -31,14 +31,17 @@
             # evdev and uinput crates typically require libudev to build
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = [ pkgs.udev ];
+            runtimeInputs = [ (pkgs.python3.withPackages (ps: with ps; [ toml ])) ];
+
+            postInstall = ''
+              cp onboard.sh $out/bin/bezel-onboard
+            '';
 
             postPatch = ''
               substituteInPlace src/dispatcher.rs \
                 --replace-fail '"sh"' '"${pkgs.runtimeShell}"' \
                 --replace-fail '"notify-send"' '"${lib.getExe' pkgs.libnotify "notify-send"}"'
-            '';
 
-            postInstall = ''
               install -Dm644 config.toml.example \
                 $out/share/bezel/config.toml.example
             '';
